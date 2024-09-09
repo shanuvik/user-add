@@ -1,0 +1,100 @@
+---
+- name: Add 'ansible' user with admin privileges and enable passwordless SSH login
+  hosts: all
+  become: yes
+  tasks:
+
+    - name: Ensure 'openssh-server' is installed
+      ansible.builtin.package:
+        name: openssh-server
+        state: present
+
+    - name: Ensure sshd is running and enabled on boot
+      ansible.builtin.service:
+        name: sshd
+        state: started
+        enabled: yes
+
+    - name: Ensure PubkeyAuthentication is enabled in SSH config
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PubkeyAuthentication'
+        line: 'PubkeyAuthentication yes'
+        state: present
+
+    - name: Ensure PasswordAuthentication is disabled in SSH config
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+        state: present
+
+    - name: Restart SSH service to apply changes
+      ansible.builtin.service:
+        name: sshd
+        state: restarted
+
+    - name: Create 'ansible' user
+      ansible.builtin.user:
+        name: ansible
+        comment: "Ansible Admin User"
+        shell: /bin/bash
+        state: present
+
+    - name: Add 'ansible' user to the 'wheel' group (sudo group)
+      ansible.builtin.user:
+        name: ansible
+        groups: wheel
+        append: yes
+
+    - name: Ensure sudoers file for 'ansible' user allows passwordless sudo
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/ansible
+        content: 'ansible ALL=(ALL) NOPASSWD:ALL'
+        owner: root
+        group: root
+        mode: '0440'
+
+    - name: Create .ssh directory for 'ansible' user
+      ansible.builtin.file:
+        path: /home/ansible/.ssh
+        state: directory
+        owner: ansible
+        group: ansible
+        mode: '0700'
+
+    - name: Check if public key file exists on the control machine
+      local_action:
+        module: stat
+        path: /root/.ssh/ec2-user.pub
+      register: pub_key_stat
+
+    - name: Convert public key to OpenSSH format on control machine
+      local_action: 
+        module: shell 
+        cmd: "ssh-keygen -i -f /root/.ssh/ec2-user.pub > /root/.ssh/ansibles-converted.pub"
+      when: pub_key_stat.stat.exists
+      args:
+        creates: /root/.ssh/ansibles-converted.pub
+
+    - name: Copy converted public key to the remote host
+      ansible.builtin.copy:
+        src: /root/.ssh/ansibles-converted.pub
+        dest: /home/ansible/.ssh/authorized_keys
+        owner: ansible
+        group: ansible
+        mode: '0600'
+      when: pub_key_stat.stat.exists
+
+    - name: Ensure proper permissions for the 'ansible' user's home directory
+      ansible.builtin.file:
+        path: /home/ansible
+        owner: ansible
+        group: ansible
+        state: directory
+        mode: '0755'
+
+    - name: Ensure SELinux is in permissive mode (optional)
+      ansible.builtin.command: setenforce 0
+      ignore_errors: yes
+
